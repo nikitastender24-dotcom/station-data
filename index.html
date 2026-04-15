@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Все метеостанции мира — ПРАВИЛЬНЫЙ ПОРЯДОК</title>
+    <title>Погодная карта (локальный сервер)</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -59,56 +59,41 @@
             
             function renderMarkersForBounds(bounds) {
                 markerLayer.clearLayers();
-                
                 const visibleStations = allStations.filter(s => bounds.contains([s.lat, s.lon]));
-                
                 visibleStations.forEach(s => {
                     const color = getColor(s.temp);
                     const markerUrl = `https://cc.voeikovmgo.ru/iframes/cwt/marker.php?shape=box&fontsize=7&color=${color}&val=${s.temp.toFixed(1)}`;
-                    
                     const icon = L.icon({
                         iconUrl: markerUrl,
                         iconSize: [MARKER_WIDTH, MARKER_HEIGHT],
                         iconAnchor: [MARKER_WIDTH/2, MARKER_HEIGHT/2],
                         popupAnchor: [0, -MARKER_HEIGHT/2]
                     });
-                    
-                    const marker = L.marker([s.lat, s.lon], { icon: icon });
-                    
+                    const marker = L.marker([s.lat, s.lon], { icon });
                     let popupContent = `<b>${s.title}</b><br>`;
                     popupContent += `🌡️ Температура: <b>${s.temp.toFixed(1)} °C</b><br>`;
-                    
-                    if (s.dewPoint !== null) {
-                        popupContent += `💧 Точка росы: ${s.dewPoint.toFixed(1)} °C<br>`;
-                    }
-                    
-                    if (s.pressure !== null) {
-                        popupContent += `🔵 Давление: ${s.pressure.toFixed(1)} гПа<br>`;
-                    }
-                    
+                    if (s.dewPoint !== null) popupContent += `💧 Точка росы: ${s.dewPoint.toFixed(1)} °C<br>`;
+                    if (s.pressure !== null) popupContent += `🔵 Давление: ${s.pressure.toFixed(1)} гПа<br>`;
                     if (s.windSpeed !== null && s.windDir !== null) {
                         const arrow = getWindArrow(s.windDir);
                         popupContent += `💨 Ветер: ${s.windSpeed.toFixed(1)} м/с, ${s.windDir}° ${arrow}<br>`;
                     } else if (s.windSpeed !== null) {
                         popupContent += `💨 Ветер: ${s.windSpeed.toFixed(1)} м/с<br>`;
                     }
-                    
                     popupContent += `<small>${s.datetime}</small>`;
-                    
                     marker.bindPopup(popupContent);
                     marker.addTo(markerLayer);
                 });
-                
                 stationCountEl.textContent = `Показано ${visibleStations.length} из ${allStations.length} станций`;
             }
             
             async function loadAllStations() {
                 if (isLoading) return;
                 isLoading = true;
-                stationCountEl.textContent = 'Загрузка глобальных данных...';
+                stationCountEl.textContent = 'Загрузка данных через локальный сервер...';
                 
                 try {
-                    const baseUrl = 'https://cc.voeikovmgo.ru/iframes/cwt/get-kn01.php';
+                    // Запрос к нашему прокси (Flask)
                     const worldBounds = L.latLngBounds([-90, -180], [90, 180]);
                     const params = new URLSearchParams({
                         bounds: worldBounds.toBBoxString(),
@@ -119,10 +104,7 @@
                         actuality: '240'
                     });
                     
-                    const proxy = 'https://corsproxy.io/?';
-                    const url = proxy + encodeURIComponent(`${baseUrl}?${params}`);
-                    
-                    const response = await fetch(url);
+                    const response = await fetch(`/api/weather?${params}`);
                     const json = await response.json();
                     
                     if (json.result !== 'ok') {
@@ -134,24 +116,13 @@
                         .map(station => {
                             const lat = parseFloat(station.lat);
                             const lon = parseFloat(station.lon);
-                            
-                            // ПРАВИЛЬНЫЙ ПОРЯДОК:
-                            // v1 = направление ветра
-                            // v2 = скорость ветра
-                            // v3 = температура
-                            // v4 = точка росы
-                            // v5 = давление
-                            
                             const windDir = parseFloat(station.v1);
                             const windSpeed = parseFloat(station.v2);
                             const temp = parseFloat(station.v3);
                             const dewPoint = parseFloat(station.v4);
                             const pressure = parseFloat(station.v5);
-                            
                             return {
-                                lat: lat,
-                                lon: lon,
-                                temp: temp,
+                                lat, lon, temp,
                                 dewPoint: !isNaN(dewPoint) ? dewPoint : null,
                                 pressure: !isNaN(pressure) ? pressure : null,
                                 windSpeed: !isNaN(windSpeed) ? windSpeed : null,
@@ -163,12 +134,11 @@
                         .filter(s => !isNaN(s.temp) && !isNaN(s.lat) && !isNaN(s.lon));
                     
                     stationCountEl.textContent = `Загружено ${allStations.length} станций. Перемещайте карту.`;
-                    
                     renderMarkersForBounds(map.getBounds());
                     
                 } catch (error) {
                     console.error(error);
-                    stationCountEl.textContent = 'Ошибка соединения';
+                    stationCountEl.textContent = 'Ошибка соединения с сервером';
                 } finally {
                     isLoading = false;
                 }
