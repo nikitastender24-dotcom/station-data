@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Все метеостанции мира — ПРАВИЛЬНЫЙ ПОРЯДОК</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        #map { height: 100vh; width: 100%; }
+        .info-panel {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: white;
+            padding: 8px 14px;
+            border-radius: 4px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.2);
+            z-index: 1000;
+            font-family: sans-serif;
+            font-size: 14px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="info-panel" id="station-count">Загрузка всех станций мира...</div>
+    <script>
+        (function() {
+            const MARKER_WIDTH = 24;
+            const MARKER_HEIGHT = 16;
+            
+            function getColor(temp) {
+                if (temp < -10) return '000066';
+                if (temp < 0)   return '0044cc';
+                if (temp < 10)  return '00994d';
+                if (temp < 20)  return 'cc8800';
+                return 'cc0000';
+            }
+            
+            function getWindArrow(degrees) {
+                if (degrees === undefined || degrees === null) return '';
+                const arrows = ['↓', '↙', '←', '↖', '↑', '↗', '→', '↘'];
+                const index = Math.round(((degrees + 22.5) % 360) / 45);
+                return arrows[index % 8];
+            }
+            
+            const map = L.map('map').setView([55.75, 37.61], 5);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap contributors'
+            }).addTo(map);
+            
+            const markerLayer = L.layerGroup().addTo(map);
+            const stationCountEl = document.getElementById('station-count');
+            
+            let allStations = [];
+            let isLoading = false;
+            
+            function renderMarkersForBounds(bounds) {
+                markerLayer.clearLayers();
+                
+                const visibleStations = allStations.filter(s => bounds.contains([s.lat, s.lon]));
+                
+                visibleStations.forEach(s => {
+                    const color = getColor(s.temp);
+                    const markerUrl = `https://cc.voeikovmgo.ru/iframes/cwt/marker.php?shape=box&fontsize=7&color=${color}&val=${s.temp.toFixed(1)}`;
+                    
+                    const icon = L.icon({
+                        iconUrl: markerUrl,
+                        iconSize: [MARKER_WIDTH, MARKER_HEIGHT],
+                        iconAnchor: [MARKER_WIDTH/2, MARKER_HEIGHT/2],
+                        popupAnchor: [0, -MARKER_HEIGHT/2]
+                    });
+                    
+                    const marker = L.marker([s.lat, s.lon], { icon: icon });
+                    
+                    let popupContent = `<b>${s.title}</b><br>`;
+                    popupContent += `🌡️ Температура: <b>${s.temp.toFixed(1)} °C</b><br>`;
+                    
+                    if (s.dewPoint !== null) {
+                        popupContent += `💧 Точка росы: ${s.dewPoint.toFixed(1)} °C<br>`;
+                    }
+                    
+                    if (s.pressure !== null) {
+                        popupContent += `🔵 Давление: ${s.pressure.toFixed(1)} гПа<br>`;
+                    }
+                    
+                    if (s.windSpeed !== null && s.windDir !== null) {
+                        const arrow = getWindArrow(s.windDir);
+                        popupContent += `💨 Ветер: ${s.windSpeed.toFixed(1)} м/с, ${s.windDir}° ${arrow}<br>`;
+                    } else if (s.windSpeed !== null) {
+                        popupContent += `💨 Ветер: ${s.windSpeed.toFixed(1)} м/с<br>`;
+                    }
+                    
+                    popupContent += `<small>${s.datetime}</small>`;
+                    
+                    marker.bindPopup(popupContent);
+                    marker.addTo(markerLayer);
+                });
+                
+                stationCountEl.textContent = `Показано ${visibleStations.length} из ${allStations.length} станций`;
+            }
+            
+            async function loadAllStations() {
+                if (isLoading) return;
+                isLoading = true;
+                stationCountEl.textContent = 'Загрузка глобальных данных...';
+                
+                try {
+                    const baseUrl = 'https://cc.voeikovmgo.ru/iframes/cwt/get-kn01.php';
+                    const worldBounds = L.latLngBounds([-90, -180], [90, 180]);
+                    const params = new URLSearchParams({
+                        bounds: worldBounds.toBBoxString(),
+                        zoom: 4,
+                        datetime: 'now',
+                        lang: 'ru',
+                        layer: 'puasson',
+                        actuality: '240'
+                    });
+                    
+                    const proxy = 'https://corsproxy.io/?';
+                    const url = proxy + encodeURIComponent(`${baseUrl}?${params}`);
+                    
+                    const response = await fetch(url);
+                    const json = await response.json();
+                    
+                    if (json.result !== 'ok') {
+                        stationCountEl.textContent = 'Ошибка загрузки данных';
+                        return;
+                    }
+                    
+                    allStations = json.data
+                        .map(station => {
+                            const lat = parseFloat(station.lat);
+                            const lon = parseFloat(station.lon);
+                            
+                            // ПРАВИЛЬНЫЙ ПОРЯДОК:
+                            // v1 = направление ветра
+                            // v2 = скорость ветра
+                            // v3 = температура
+                            // v4 = точка росы
+                            // v5 = давление
+                            
+                            const windDir = parseFloat(station.v1);
+                            const windSpeed = parseFloat(station.v2);
+                            const temp = parseFloat(station.v3);
+                            const dewPoint = parseFloat(station.v4);
+                            const pressure = parseFloat(station.v5);
+                            
+                            return {
+                                lat: lat,
+                                lon: lon,
+                                temp: temp,
+                                dewPoint: !isNaN(dewPoint) ? dewPoint : null,
+                                pressure: !isNaN(pressure) ? pressure : null,
+                                windSpeed: !isNaN(windSpeed) ? windSpeed : null,
+                                windDir: !isNaN(windDir) ? windDir : null,
+                                title: station.title || 'Станция',
+                                datetime: station.date_time || ''
+                            };
+                        })
+                        .filter(s => !isNaN(s.temp) && !isNaN(s.lat) && !isNaN(s.lon));
+                    
+                    stationCountEl.textContent = `Загружено ${allStations.length} станций. Перемещайте карту.`;
+                    
+                    renderMarkersForBounds(map.getBounds());
+                    
+                } catch (error) {
+                    console.error(error);
+                    stationCountEl.textContent = 'Ошибка соединения';
+                } finally {
+                    isLoading = false;
+                }
+            }
+            
+            let moveTimer;
+            map.on('moveend', () => {
+                if (allStations.length === 0) return;
+                clearTimeout(moveTimer);
+                moveTimer = setTimeout(() => {
+                    renderMarkersForBounds(map.getBounds());
+                }, 100);
+            });
+            
+            loadAllStations();
+            
+            window.addEventListener('beforeunload', () => {
+                clearTimeout(moveTimer);
+            });
+        })();
+    </script>
+</body>
+</html>
